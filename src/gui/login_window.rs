@@ -25,8 +25,6 @@ impl LoginWindow {
         
         let app_state_clone = app_state.clone();
         login_button.connect_clicked(move |_| {
-            println!("Login button clicked!");
-            
             // Open the login URL in the default browser
             if let Err(e) = open::that("http://127.0.0.1:8888/login") {
                 eprintln!("Failed to open browser: {}", e);

@@ -1,26 +1,10 @@
 use actix_web::{web, HttpResponse, Result, rt};
-use std::env;
-use std::fs;
-use std::path::PathBuf;
-use crate::auth::{CallbackQuery, TokenRequest};
+use crate::spotify::auth::{CallbackQuery, get_auth_url, exchange_code_for_token};
 use crate::utils::generate_random_string;
 use crate::templates::MessageTemplate;
 
 pub async fn login() -> Result<HttpResponse> {
-    let client_id = env::var("SPOTIFY_CLIENT_ID").expect("SPOTIFY_CLIENT_ID not found in environment");
-    let redirect_uri = env::var("SPOTIFY_REDIRECT_URI")
-        .unwrap_or_else(|_| "http://localhost:8888/callback".to_string());
-    
-    let state = generate_random_string(16);
-    let scope = "user-read-private user-read-email playlist-modify-public playlist-modify-private playlist-read-private playlist-read-collaborative";
-
-    let auth_url = format!(
-        "https://accounts.spotify.com/authorize?response_type=code&client_id={}&scope={}&redirect_uri={}&state={}",
-        urlencoding::encode(&client_id),
-        urlencoding::encode(scope),
-        urlencoding::encode(&redirect_uri),
-        urlencoding::encode(&state)
-    );
+    let auth_url = get_auth_url();
 
     Ok(HttpResponse::Found()
         .append_header(("Location", auth_url))
@@ -29,114 +13,49 @@ pub async fn login() -> Result<HttpResponse> {
 
 pub async fn callback(query: web::Query<CallbackQuery>) -> Result<HttpResponse> {
     if let Some(error) = &query.error {
+        println!("✗ OAuth authorization failed: {}", error);
         let template = MessageTemplate::authorization_error(error);
-        return serve_template(template);
+        return serve_template(template, false); // Don't shutdown on error
     }
 
     let code = match &query.code {
         Some(code) => code,
         None => {
+            println!("✗ No authorization code received");
             let template = MessageTemplate::no_code_error();
-            return serve_template(template);
+            return serve_template(template, false); // Don't shutdown on error
         }
     };
 
-    // Exchange code for access token
-    let client_id = env::var("SPOTIFY_CLIENT_ID").expect("SPOTIFY_CLIENT_ID not found");
-    let client_secret = env::var("SPOTIFY_CLIENT_SECRET").expect("SPOTIFY_CLIENT_SECRET not found");
-    let redirect_uri = env::var("SPOTIFY_REDIRECT_URI").expect("SPOTIFY_REDIRECT_URI not found");
-
-    let token_request = TokenRequest {
-        grant_type: "authorization_code".to_string(),
-        code: code.clone(),
-        redirect_uri,
-        client_id: client_id.clone(),
-        client_secret,
-    };
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post("https://accounts.spotify.com/api/token")
-        .header("Content-Type", "application/x-www-form-urlencoded")
-        .form(&token_request)
-        .send()
-        .await;
-
-    match response {
-        Ok(resp) => {
-            let token_data = resp.text().await.unwrap_or_else(|_| "Failed to read response".to_string());
-            println!("✓ Logged in successfully");
-            
-            // Save auth data to config file
-            if let Err(_) = save_auth_config(&token_data) {
-                println!("✗ Failed to save auth config");
-            }
+    // Exchange code for access token using the auth module
+    match exchange_code_for_token(code).await {
+        Ok(_token_response) => {
+            println!("✓ Successfully authenticated with Spotify");
             
             // Launch GTK application
             launch_gtk_app();
             
             let template = MessageTemplate::success();
-            serve_template(template)
+            serve_template(template, true) // Shutdown on success
         }
-        Err(_) => {
-            let template = MessageTemplate::token_exchange_error("Token exchange failed");
-            serve_template(template)
+        Err(e) => {
+            println!("✗ Token exchange failed: {}", e);
+            let template = MessageTemplate::token_exchange_error(&format!("Token exchange failed: {}", e));
+            serve_template(template, false) // Don't shutdown on error
         }
     }
 }
 
-fn save_auth_config(token_data: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
-    let config_dir = home_dir.join(".config").join("spoty_on_qt");
-    
-    // Create config directory if it doesn't exist
-    fs::create_dir_all(&config_dir)?;
-    
-    let config_file = config_dir.join("settings.conf");
-    
-    // Parse token data (assuming it's JSON) and create readable config content
-    let parsed: serde_json::Value = serde_json::from_str(token_data)?;
-    
-    let mut config_content = String::from("[spotify_auth]\n");
-    
-    if let Some(access_token) = parsed.get("access_token").and_then(|v| v.as_str()) {
-        config_content.push_str(&format!("access_token={}\n", access_token));
-    }
-    
-    if let Some(refresh_token) = parsed.get("refresh_token").and_then(|v| v.as_str()) {
-        config_content.push_str(&format!("refresh_token={}\n", refresh_token));
-    }
-    
-    if let Some(token_type) = parsed.get("token_type").and_then(|v| v.as_str()) {
-        config_content.push_str(&format!("token_type={}\n", token_type));
-    }
-    
-    if let Some(expires_in) = parsed.get("expires_in").and_then(|v| v.as_u64()) {
-        config_content.push_str(&format!("expires_in={}\n", expires_in));
-    }
-    
-    if let Some(scope) = parsed.get("scope").and_then(|v| v.as_str()) {
-        config_content.push_str(&format!("scope={}\n", scope));
-    }
-    
-    // Add timestamp for when the token was saved
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_secs();
-    config_content.push_str(&format!("saved_at={}\n", timestamp));
-    
-    fs::write(config_file, config_content)?;
-    Ok(())
-}
-
-fn serve_template(template: MessageTemplate) -> Result<HttpResponse> {
+fn serve_template(template: MessageTemplate, should_shutdown: bool) -> Result<HttpResponse> {
     match template.render() {
         Ok(html_content) => {
-            // Schedule shutdown after a brief delay to ensure response is sent
-            actix_web::rt::spawn(async {
-                tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                rt::System::current().stop();
-            });
+            if should_shutdown {
+                // Schedule shutdown after a 5 second delay to ensure response is sent
+                actix_web::rt::spawn(async {
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    rt::System::current().stop();
+                });
+            }
             
             Ok(HttpResponse::Ok()
                 .content_type("text/html")
@@ -148,7 +67,6 @@ fn serve_template(template: MessageTemplate) -> Result<HttpResponse> {
 }
 
 fn launch_gtk_app() {
-    println!("Launching GTK application...");
     std::thread::spawn(|| {
         // Try different GTK applications in order of preference
         let gtk_commands = [
@@ -165,7 +83,6 @@ fn launch_gtk_app() {
                 .args(args)
                 .spawn()
             {
-                println!("✓ GTK app launched: {}", cmd);
                 launched = true;
                 break;
             }
@@ -173,14 +90,9 @@ fn launch_gtk_app() {
         
         if !launched {
             // Try a simple notification instead
-            if let Ok(_) = std::process::Command::new("notify-send")
+            let _ = std::process::Command::new("notify-send")
                 .args(&["Spoty", "Spotify OAuth successful!"])
-                .spawn()
-            {
-                println!("✓ Notification sent");
-            } else {
-                println!("✗ Could not launch GTK app or send notification");
-            }
+                .spawn();
         }
     });
 }

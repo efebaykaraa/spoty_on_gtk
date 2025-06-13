@@ -1,44 +1,8 @@
 use gtk4::{glib, prelude::*};
 use gtk4::{ApplicationWindow, Label, Box, Orientation, ScrolledWindow, ListBox};
 use crate::gui::AppState;
-use crate::utils::settings::{Settings, load_settings};
-use serde::Deserialize;
-use std::path::Path;
-
-#[derive(Deserialize)]
-struct SpotifyAlbumsResponse {
-    items: Vec<AlbumItem>,
-    total: u32,
-    offset: u32,
-    limit: u32,
-}
-
-#[derive(Deserialize)]
-struct AlbumItem {
-    added_at: String,
-    album: Album,
-}
-
-#[derive(Deserialize)]
-struct Album {
-    name: String,
-    artists: Vec<Artist>,
-    images: Vec<AlbumImage>,
-    release_date: String,
-    total_tracks: u32,
-}
-
-#[derive(Deserialize)]
-struct Artist {
-    name: String,
-}
-
-#[derive(Deserialize)]
-struct AlbumImage {
-    url: String,
-    height: u32,
-    width: u32,
-}
+use crate::utils::settings::load_settings;
+use crate::spotify::albums::{fetch_top_items, TopItem, Track};
 
 pub struct MainWindow {
     window: ApplicationWindow,
@@ -60,25 +24,26 @@ impl MainWindow {
         vbox.set_margin_end(20);
 
         // Title
-        let welcome_label = Label::new(Some("Your Albums"));
+        let welcome_label = Label::new(Some("Your Top Tracks"));
         welcome_label.add_css_class("title-1");
 
-        // Scrolled window for albums
+        // Scrolled window for tracks
         let scrolled_window = ScrolledWindow::new();
         scrolled_window.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
         scrolled_window.set_vexpand(true);
 
-        let albums_list = ListBox::new();
-        albums_list.add_css_class("boxed-list");
-        scrolled_window.set_child(Some(&albums_list));
+        let tracks_list = ListBox::new();
+        tracks_list.add_css_class("boxed-list");
+        scrolled_window.set_child(Some(&tracks_list));
 
         vbox.append(&welcome_label);
         vbox.append(&scrolled_window);
 
-        // Load and display albums
-        let albums_list_clone = albums_list.clone();
+        // Load and display tracks - properly pass the access token from AppState
+        let tracks_list_clone = tracks_list.clone();
+        let access_token = app_state.access_token.lock().unwrap().clone();
         glib::spawn_future_local(async move {
-            Self::load_albums(albums_list_clone).await;
+            Self::load_tracks(tracks_list_clone, access_token).await;
         });
 
         window.set_child(Some(&vbox));
@@ -86,82 +51,84 @@ impl MainWindow {
         Self { window }
     }
 
-    async fn load_albums(albums_list: ListBox) {
+    async fn load_tracks(tracks_list: ListBox, access_token: Option<String>) {
         let settings = load_settings();
         
-        // TODO: Get access token from OAuth flow
-        let access_token = ""; // This should come from your OAuth implementation
-        
-        if access_token.is_empty() {
-            let error_label = Label::new(Some("Please login to view your albums"));
-            error_label.add_css_class("dim-label");
-            albums_list.append(&error_label);
-            return;
-        }
+        let access_token = match access_token {
+            Some(token) => token,
+            None => {
+                let error_label = Label::new(Some("Please login to view your top tracks"));
+                error_label.add_css_class("dim-label");
+                tracks_list.append(&error_label);
+                return;
+            }
+        };
 
-        match Self::fetch_albums(&settings, access_token, 0).await {
+        match fetch_top_items(&settings, &access_token, "tracks", &settings.time_range, 0).await {
             Ok(response) => {
+                let mut track_count = 0;
                 for item in response.items {
-                    let album_row = Self::create_album_row(&item.album);
-                    albums_list.append(&album_row);
+                    if let TopItem::Track(track) = item {
+                        let track_row = Self::create_track_row(&track);
+                        tracks_list.append(&track_row);
+                        track_count += 1;
+                    }
                 }
+                
+                // Add status information
+                let status_text = if track_count == 0 {
+                    "No tracks found".to_string()
+                } else {
+                    format!("✓ Successfully fetched {} track{}", track_count, if track_count == 1 { "" } else { "s" })
+                };
+                
+                let status_label = Label::new(Some(&status_text));
+                status_label.add_css_class(if track_count == 0 { "dim-label" } else { "success" });
+                status_label.set_margin_top(12);
+                tracks_list.append(&status_label);
             }
             Err(e) => {
-                let error_label = Label::new(Some(&format!("Error loading albums: {:?}", e)));
+                let error_label = Label::new(Some(&format!("✗ Error loading tracks: {}", e)));
                 error_label.add_css_class("error");
-                albums_list.append(&error_label);
+                tracks_list.append(&error_label);
             }
         }
     }
 
-    async fn fetch_albums(settings: &Settings, access_token: &str, offset: u32) -> Result<SpotifyAlbumsResponse, std::boxed::Box<dyn std::error::Error>> {
-        let client = reqwest::Client::new();
-        let url = format!(
-            "https://api.spotify.com/v1/me/albums?limit={}&offset={}&market={}",
-            settings.limit, offset, settings.market
-        );
-
-        let response = client
-            .get(&url)
-            .header("Authorization", format!("Bearer {}", access_token))
-            .send()
-            .await?;
-
-        if response.status().is_success() {
-            let albums: SpotifyAlbumsResponse = response.json().await?;
-            Ok(albums)
-        } else {
-            Err(format!("API request failed: {}", response.status()).into())
-        }
-    }
-
-    fn create_album_row(album: &Album) -> Box {
+    fn create_track_row(track: &Track) -> Box {
         let row = Box::new(Orientation::Horizontal, 12);
         row.set_margin_top(8);
         row.set_margin_bottom(8);
         row.set_margin_start(12);
         row.set_margin_end(12);
 
-        // Album info
+        // Track info
         let info_box = Box::new(Orientation::Vertical, 4);
         
-        let title_label = Label::new(Some(&album.name));
+        let title_label = Label::new(Some(&track.name));
         title_label.set_halign(gtk4::Align::Start);
         title_label.add_css_class("heading");
         
-        let artist_names: Vec<&str> = album.artists.iter().map(|a| a.name.as_str()).collect();
+        let artist_names: Vec<&str> = track.artists.iter().map(|a| a.name.as_str()).collect();
         let artists_text = artist_names.join(", ");
         let artist_label = Label::new(Some(&artists_text));
         artist_label.set_halign(gtk4::Align::Start);
         artist_label.add_css_class("dim-label");
         
-        let details = format!("{} • {} tracks", album.release_date, album.total_tracks);
+        let album_label = Label::new(Some(&track.album.name));
+        album_label.set_halign(gtk4::Align::Start);
+        album_label.add_css_class("caption");
+
+        let duration_minutes = track.duration_ms / 60000;
+        let duration_seconds = (track.duration_ms % 60000) / 1000;
+        let details = format!("{}:{:02} • Popularity: {}", duration_minutes, duration_seconds, track.popularity);
         let details_label = Label::new(Some(&details));
         details_label.set_halign(gtk4::Align::Start);
         details_label.add_css_class("caption");
 
         info_box.append(&title_label);
         info_box.append(&artist_label);
+        info_box.append(&album_label);
         info_box.append(&details_label);
 
         row.append(&info_box);

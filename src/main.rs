@@ -2,7 +2,7 @@ use actix_web::{App, HttpServer};
 use dotenv::dotenv;
 use std::env;
 
-mod auth;
+mod spotify;
 mod utils;
 mod handlers;
 mod gui;
@@ -17,7 +17,7 @@ async fn main() -> std::io::Result<()> {
     
     let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1:8888".to_string());
     
-    println!("Launching Actix server on http://{}", host);
+    println!("Starting Spoty server on http://{}", host);
     
     // Launch GUI in a separate thread
     let gui_handle = tokio::spawn(async {

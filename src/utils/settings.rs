@@ -7,6 +7,7 @@ use crate::utils::config::get_config_dir;
 pub struct Settings {
     pub limit: u32,
     pub market: String,
+    pub time_range: String,
 }
 
 impl Default for Settings {
@@ -14,6 +15,7 @@ impl Default for Settings {
         Self {
             limit: 5,
             market: "US".to_string(),
+            time_range: "medium_term".to_string(), // short_term, medium_term, long_term
         }
     }
 }

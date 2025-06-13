@@ -1,9 +1,7 @@
 use gtk4::prelude::*;
 use gtk4::Application;
 use std::sync::{Arc, Mutex};
-use std::fs;
-use std::path::Path;
-use serde::Deserialize;
+use crate::spotify::auth::load_auth_config;
 use crate::utils::config::get_config_dir;
 
 mod login_window;
@@ -17,12 +15,6 @@ pub struct AppState {
     pub app: Application,
     pub current_window: Arc<Mutex<Option<gtk4::ApplicationWindow>>>,
     pub access_token: Arc<Mutex<Option<String>>>,
-}
-
-#[derive(Deserialize)]
-struct Config {
-    access_token: Option<String>,
-    refresh_token: Option<String>,
 }
 
 pub async fn launch_gui() {
@@ -60,20 +52,6 @@ pub async fn launch_gui() {
     // Run the GTK application
     let args: Vec<String> = std::env::args().collect();
     app.run_with_args(&args);
-}
-
-fn load_auth_config() -> Option<String> {
-    let config_dir = get_config_dir();
-    let config_path = Path::new(&config_dir).join("auth.conf");
-    
-    if config_path.exists() {
-        if let Ok(content) = fs::read_to_string(&config_path) {
-            if let Ok(config) = toml::from_str::<Config>(&content) {
-                return config.access_token;
-            }
-        }
-    }
-    None
 }
 
 fn show_login_window(app_state: AppState) {
