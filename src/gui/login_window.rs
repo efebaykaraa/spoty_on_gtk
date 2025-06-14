@@ -23,16 +23,11 @@ impl LoginWindow {
 
         let login_button = Button::with_label("Login to Spotify");
         
-        let app_state_clone = app_state.clone();
         login_button.connect_clicked(move |_| {
             // Open the login URL in the default browser
             if let Err(e) = open::that("http://127.0.0.1:8888/login") {
                 eprintln!("Failed to open browser: {}", e);
             }
-            
-            // For now, simulate successful login by showing main window
-            // In a real implementation, you'd wait for the OAuth callback
-            show_main_window(app_state_clone.clone());
         });
 
         vbox.append(&login_button);

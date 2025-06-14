@@ -11,3 +11,4 @@ pub fn generate_random_string(length: usize) -> String {
 pub mod config;
 pub mod settings;
 pub mod template_engine;
+pub mod query_builder;

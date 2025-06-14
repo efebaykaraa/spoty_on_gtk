@@ -4,21 +4,26 @@ use curl::easy::Easy;
 use std::io::Write;
 
 #[derive(Deserialize)]
-pub struct SpotifyTopResponse {
-    pub items: Vec<TopItem>,
-    pub total: u32,
-    pub offset: u32,
-    pub limit: u32,
+pub struct RecentlyPlayedResponse {
     pub href: String,
+    pub limit: u32,
     pub next: Option<String>,
-    pub previous: Option<String>,
+    pub cursors: Cursors,
+    pub total: Option<u32>,
+    pub items: Vec<RecentlyPlayedItem>,
 }
 
 #[derive(Deserialize)]
-#[serde(untagged)]
-pub enum TopItem {
-    Track(Track),
-    Artist(Artist),
+pub struct Cursors {
+    pub after: String,
+    pub before: String,
+}
+
+#[derive(Deserialize)]
+pub struct RecentlyPlayedItem {
+    pub track: Track,
+    pub played_at: String,
+    pub context: Option<PlayContext>,
 }
 
 #[derive(Deserialize)]
@@ -33,13 +38,13 @@ pub struct Track {
     pub external_urls: ExternalUrls,
     pub href: String,
     pub id: String,
-    pub is_playable: bool,
+    pub is_playable: Option<bool>,
     pub name: String,
     pub popularity: u32,
     pub preview_url: Option<String>,
     pub track_number: u32,
     #[serde(rename = "type")]
-    pub item_type: String,
+    pub track_type: String,
     pub uri: String,
     pub is_local: bool,
     pub restrictions: Option<Restrictions>,
@@ -53,34 +58,30 @@ pub struct Album {
     pub external_urls: ExternalUrls,
     pub href: String,
     pub id: String,
-    pub images: Vec<AlbumImage>,
+    pub images: Vec<Image>,
     pub name: String,
     pub release_date: String,
     pub release_date_precision: String,
+    pub restrictions: Option<Restrictions>,
     #[serde(rename = "type")]
-    pub item_type: String,
+    pub album_type_field: String,
     pub uri: String,
     pub artists: Vec<Artist>,
-    pub is_playable: Option<bool>,
 }
 
 #[derive(Deserialize)]
 pub struct Artist {
     pub external_urls: ExternalUrls,
-    pub followers: Option<Followers>,
-    pub genres: Option<Vec<String>>,
     pub href: String,
     pub id: String,
-    pub images: Option<Vec<AlbumImage>>,
     pub name: String,
-    pub popularity: Option<u32>,
     #[serde(rename = "type")]
-    pub item_type: String,
+    pub artist_type: String,
     pub uri: String,
 }
 
 #[derive(Deserialize)]
-pub struct AlbumImage {
+pub struct Image {
     pub url: String,
     pub height: u32,
     pub width: u32,
@@ -99,27 +100,28 @@ pub struct ExternalIds {
 }
 
 #[derive(Deserialize)]
-pub struct Followers {
-    pub href: Option<String>,
-    pub total: u32,
-}
-
-#[derive(Deserialize)]
 pub struct Restrictions {
     pub reason: String,
 }
 
-pub async fn fetch_top_items(
-    settings: &Settings, 
-    access_token: &str, 
-    item_type: &str,
-    time_range: &str,
-    offset: u32
-) -> Result<SpotifyTopResponse, Box<dyn std::error::Error>> {
-    let url = format!(
-        "https://api.spotify.com/v1/me/top/{}?limit={}&offset={}&time_range={}",
-        item_type, settings.limit, offset, time_range
-    );
+#[derive(Deserialize)]
+pub struct PlayContext {
+    #[serde(rename = "type")]
+    pub context_type: String,
+    pub href: String,
+    pub external_urls: ExternalUrls,
+    pub uri: String,
+}
+
+pub async fn fetch_recently_played(
+    access_token: &str,
+    client_token: &str,
+) -> Result<RecentlyPlayedResponse, Box<dyn std::error::Error>> {
+    let url = "https://api.spotify.com/v1/me/player/recently-played";
+    
+    println!("Fetching recently played tracks from: {}", url);
+    println!("Access token length: {}", access_token.len());
+    println!("Client token length: {}", client_token.len());
     
     let mut easy = Easy::new();
     let mut response_data = Vec::new();
@@ -127,10 +129,14 @@ pub async fn fetch_top_items(
     
     // Set headers
     headers.append(&format!("Authorization: Bearer {}", access_token))?;
+    headers.append(&format!("client-token: {}", client_token))?;
     headers.append("Accept: */*")?;
-    headers.append("User-Agent: curl/8.14.1")?;
+    headers.append("User-Agent: Spoty/1.0")?;
+    headers.append("Content-Type: application/json")?;
     
-    easy.url(&url)?;
+    println!("Headers configured, making request...");
+    
+    easy.url(url)?;
     easy.http_headers(headers)?;
     easy.timeout(std::time::Duration::from_secs(30))?;
     easy.connect_timeout(std::time::Duration::from_secs(15))?;
@@ -143,6 +149,7 @@ pub async fn fetch_top_items(
         })?;
         
         if let Err(e) = transfer.perform() {
+            println!("Curl error occurred: {}", e);
             return Err(format!("Curl error: {}", e).into());
         }
     }
@@ -150,21 +157,31 @@ pub async fn fetch_top_items(
     let status_code = easy.response_code()?;
     let response_text = String::from_utf8(response_data)?;
     
+    println!("Response status: {}", status_code);
+    println!("Response length: {} bytes", response_text.len());
+    
+    if response_text.len() > 0 {
+        println!("Response preview: {}", &response_text[..std::cmp::min(200, response_text.len())]);
+    }
+    
     if status_code >= 200 && status_code < 300 {
-        match serde_json::from_str::<SpotifyTopResponse>(&response_text) {
-            Ok(top_items) => Ok(top_items),
-            Err(e) => Err(e.into())
+        println!("Success! Parsing JSON response...");
+        match serde_json::from_str::<RecentlyPlayedResponse>(&response_text) {
+            Ok(recently_played) => {
+                println!("Successfully parsed {} recently played items", recently_played.items.len());
+                Ok(recently_played)
+            },
+            Err(e) => {
+                println!("JSON parsing error: {}", e);
+                println!("Full response: {}", response_text);
+                Err(e.into())
+            }
         }
     } else {
+        println!("API error - Status: {}, Response: {}", status_code, response_text);
         let error_msg = match status_code {
             401 => "Authentication failed - your access token may be expired or invalid. Please re-authenticate.".to_string(),
-            403 => {
-                if response_text.contains("Insufficient client scope") {
-                    "Insufficient permissions - your access token doesn't have the required scope. You need 'user-top-read' scope to access top items. Please re-authenticate with the correct scopes.".to_string()
-                } else {
-                    format!("Forbidden - {}", response_text)
-                }
-            },
+            403 => "Forbidden - insufficient permissions or invalid client token.".to_string(),
             429 => "Rate limit exceeded - too many requests. Please wait a moment and try again.".to_string(),
             500..=599 => "Spotify API server error - please try again later.".to_string(),
             _ => format!("API request failed with status: {} - {}", status_code, response_text)
@@ -172,10 +189,4 @@ pub async fn fetch_top_items(
         
         Err(error_msg.into())
     }
-}
-
-// Keep the old function for backward compatibility, but deprecate it
-#[deprecated(note = "Use fetch_top_items instead")]
-pub async fn fetch_albums(settings: &Settings, access_token: &str, offset: u32) -> Result<SpotifyTopResponse, Box<dyn std::error::Error>> {
-    fetch_top_items(settings, access_token, "tracks", "medium_term", offset).await
 }

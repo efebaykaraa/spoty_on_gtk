@@ -41,22 +41,41 @@ pub fn load_auth_config() -> Option<String> {
     let config_dir = get_config_dir();
     let config_path = Path::new(&config_dir).join("auth.conf");
     
-    if config_path.exists() {
-        if let Ok(content) = fs::read_to_string(&config_path) {
-            if let Ok(config) = toml::from_str::<AuthConfig>(&content) {
-                // Check if token is still valid
-                if let Some(token) = &config.access_token {
-                    if is_token_valid(&config) {
-                        return Some(token.clone());
-                    } else if let Some(refresh_token) = &config.refresh_token {
-                        // Try to refresh the token
-                        if let Ok(new_token) = refresh_access_token(refresh_token) {
-                            return Some(new_token);
-                        }
-                    }
-                }
-            }
-        }
+    if !config_path.exists() {
+        return None;
+    }
+
+    let content = match fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    let config = match toml::from_str::<AuthConfig>(&content) {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    // Check if token is still valid
+    if config.access_token.is_none() {
+        return None;
+    }
+
+    let token = config.access_token.as_ref().unwrap();
+
+    if is_token_valid(&config) {
+        return Some(token.clone());
+    }
+
+    if config.refresh_token.is_none() {
+        return None;
+    }
+
+    let refresh_token = config.refresh_token.as_ref().unwrap();
+
+    // Try to refresh the token
+    match refresh_access_token(refresh_token) {
+        Ok(new_token) => return Some(new_token),
+        Err(_) => return None,
     }
     None
 }
@@ -128,7 +147,7 @@ pub fn get_auth_url() -> String {
     let client_id = std::env::var("SPOTIFY_CLIENT_ID").expect("SPOTIFY_CLIENT_ID not set");
     let redirect_uri = std::env::var("SPOTIFY_REDIRECT_URI").expect("SPOTIFY_REDIRECT_URI not set");
     
-    let scopes = "user-library-read user-read-private user-read-email user-top-read";
+    let scopes = "user-library-read user-read-private user-read-email user-top-read user-read-recently-played";
     let state = generate_state();
     
     format!(

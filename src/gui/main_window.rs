@@ -1,8 +1,8 @@
 use gtk4::{glib, prelude::*};
 use gtk4::{ApplicationWindow, Label, Box, Orientation, ScrolledWindow, ListBox};
 use crate::gui::AppState;
-use crate::utils::settings::load_settings;
-use crate::spotify::albums::{fetch_top_items, TopItem, Track};
+use crate::spotify::primary_recommendations::PrimaryRecommendationsClient;
+use crate::thirdparty::recommendations::RecommendedTrack;
 
 pub struct MainWindow {
     window: ApplicationWindow,
@@ -24,26 +24,26 @@ impl MainWindow {
         vbox.set_margin_end(20);
 
         // Title
-        let welcome_label = Label::new(Some("Your Top Tracks"));
+        let welcome_label = Label::new(Some("Recommended for You"));
         welcome_label.add_css_class("title-1");
 
-        // Scrolled window for tracks
+        // Scrolled window for content
         let scrolled_window = ScrolledWindow::new();
         scrolled_window.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
         scrolled_window.set_vexpand(true);
 
-        let tracks_list = ListBox::new();
-        tracks_list.add_css_class("boxed-list");
-        scrolled_window.set_child(Some(&tracks_list));
+        let content_list = ListBox::new();
+        content_list.add_css_class("boxed-list");
+        scrolled_window.set_child(Some(&content_list));
 
         vbox.append(&welcome_label);
         vbox.append(&scrolled_window);
 
-        // Load and display tracks - properly pass the access token from AppState
-        let tracks_list_clone = tracks_list.clone();
+        // Load and display primary recommendations
+        let content_list_clone = content_list.clone();
         let access_token = app_state.access_token.lock().unwrap().clone();
         glib::spawn_future_local(async move {
-            Self::load_tracks(tracks_list_clone, access_token).await;
+            Self::load_primary_recommendations(content_list_clone, access_token).await;
         });
 
         window.set_child(Some(&vbox));
@@ -51,51 +51,45 @@ impl MainWindow {
         Self { window }
     }
 
-    async fn load_tracks(tracks_list: ListBox, access_token: Option<String>) {
-        let settings = load_settings();
-        
+    async fn load_primary_recommendations(content_list: ListBox, access_token: Option<String>) {
         let access_token = match access_token {
             Some(token) => token,
             None => {
-                let error_label = Label::new(Some("Please login to view your top tracks"));
+                let error_label = Label::new(Some("Please login to view your recommendations"));
                 error_label.add_css_class("dim-label");
-                tracks_list.append(&error_label);
+                content_list.append(&error_label);
                 return;
             }
         };
 
-        match fetch_top_items(&settings, &access_token, "tracks", &settings.time_range, 0).await {
+        let client_token = ""; // TODO: Get client_token from somewhere
+        let recommendations_client = PrimaryRecommendationsClient::new();
+        
+        match recommendations_client.get_primary_recommendations(&access_token, client_token, Some(20)).await {
             Ok(response) => {
-                let mut track_count = 0;
-                for item in response.items {
-                    if let TopItem::Track(track) = item {
-                        let track_row = Self::create_track_row(&track);
-                        tracks_list.append(&track_row);
-                        track_count += 1;
-                    }
+                let track_count = response.content.len();
+                for track in response.content {
+                    let track_row = Self::create_recommendation_row(&track);
+                    content_list.append(&track_row);
                 }
                 
-                // Add status information
                 let status_text = if track_count == 0 {
-                    "No tracks found".to_string()
+                    "No recommendations found".to_string()
                 } else {
-                    format!("✓ Successfully fetched {} track{}", track_count, if track_count == 1 { "" } else { "s" })
+                    format!("{} recommendations loaded", track_count)
                 };
                 
-                let status_label = Label::new(Some(&status_text));
-                status_label.add_css_class(if track_count == 0 { "dim-label" } else { "success" });
-                status_label.set_margin_top(12);
-                tracks_list.append(&status_label);
+                println!("{}", status_text);
             }
             Err(e) => {
-                let error_label = Label::new(Some(&format!("✗ Error loading tracks: {}", e)));
+                let error_label = Label::new(Some(&format!("✗ Error loading recommendations: {}", e)));
                 error_label.add_css_class("error");
-                tracks_list.append(&error_label);
+                content_list.append(&error_label);
             }
         }
     }
 
-    fn create_track_row(track: &Track) -> Box {
+    fn create_recommendation_row(track: &RecommendedTrack) -> Box {
         let row = Box::new(Orientation::Horizontal, 12);
         row.set_margin_top(8);
         row.set_margin_bottom(8);
@@ -105,7 +99,7 @@ impl MainWindow {
         // Track info
         let info_box = Box::new(Orientation::Vertical, 4);
         
-        let title_label = Label::new(Some(&track.name));
+        let title_label = Label::new(Some(&track.track_title));
         title_label.set_halign(gtk4::Align::Start);
         title_label.add_css_class("heading");
         
@@ -115,10 +109,6 @@ impl MainWindow {
         artist_label.set_halign(gtk4::Align::Start);
         artist_label.add_css_class("dim-label");
         
-        let album_label = Label::new(Some(&track.album.name));
-        album_label.set_halign(gtk4::Align::Start);
-        album_label.add_css_class("caption");
-
         let duration_minutes = track.duration_ms / 60000;
         let duration_seconds = (track.duration_ms % 60000) / 1000;
         let details = format!("{}:{:02} • Popularity: {}", duration_minutes, duration_seconds, track.popularity);
@@ -126,10 +116,14 @@ impl MainWindow {
         details_label.set_halign(gtk4::Align::Start);
         details_label.add_css_class("caption");
 
+        let id_label = Label::new(Some(&format!("ID: {}", track.id)));
+        id_label.set_halign(gtk4::Align::Start);
+        id_label.add_css_class("caption");
+
         info_box.append(&title_label);
         info_box.append(&artist_label);
-        info_box.append(&album_label);
         info_box.append(&details_label);
+        info_box.append(&id_label);
 
         row.append(&info_box);
         row
