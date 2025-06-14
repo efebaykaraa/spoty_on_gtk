@@ -1,0 +1,65 @@
+import { Button, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+export component AppWindow inherits Window {
+    title: "Spoty - Spotify Desktop Client";
+    width: 1000px;
+    height: 700px;
+    
+    callback login-clicked();
+    callback exit-app();
+    
+    in-out property <string> status-text: "Ready to connect to Spotify";
+    in-out property <bool> is-authenticated: false;
+    
+    VerticalBox {
+        padding: 20px;
+        spacing: 20px;
+        
+        Text {
+            text: "Spoty - Spotify Desktop Client";
+            font-size: 24px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        
+        Rectangle {
+            height: 2px;
+            background: #e0e0e0;
+        }
+        
+        HorizontalBox {
+            alignment: center;
+            
+            Text {
+                text: status-text;
+                font-size: 16px;
+                color: is-authenticated ? #4CAF50 : #757575;
+            }
+        }
+        
+        HorizontalBox {
+            alignment: center;
+            spacing: 20px;
+            
+            Button {
+                text: is-authenticated ? "Connected" : "Login to Spotify";
+                enabled: !is-authenticated;
+                clicked => {
+                    login-clicked();
+                }
+            }
+            
+            Button {
+                text: "Exit";
+                clicked => {
+                    exit-app();
+                }
+            }
+        }
+        
+        Rectangle {
+            // Spacer
+            height: 1px;
+        }
+    }
+}

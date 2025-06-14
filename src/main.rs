@@ -1,7 +1,6 @@
 use actix_web::{App, HttpServer};
 use dotenv::dotenv;
 use std::env;
-use tokio::sync::mpsc;
 use clap::{Arg, Command};
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
@@ -50,15 +49,7 @@ async fn main() -> std::io::Result<()> {
     let callback_called = Arc::new(AtomicBool::new(false));
     let callback_called_clone = callback_called.clone();
 
-    // Create a channel for shutdown signal
-    let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
-    
-    // Launch GUI in a separate thread, passing the shutdown sender
-    let gui_handle = tokio::spawn(async move {
-        gui::launch_gui(Some(shutdown_tx)).await;
-    });
-
-    // Start HTTP server
+    // Start HTTP server in background
     let server_handle = tokio::spawn(async move {
         let server = HttpServer::new(move || {
             let callback_flag = callback_called_clone.clone();
@@ -79,22 +70,16 @@ async fn main() -> std::io::Result<()> {
         .expect("Failed to bind server")
         .run();
         
-        // Keep server running until shutdown signal AND callback has been called
-        tokio::select! {
-            result = server => {
-                if let Err(e) = result {
-                    eprintln!("Server error: {}", e);
-                }
-                println!("Server stopped");
-            }
-            _ = shutdown_rx.recv() => {
-                println!("Shutdown signal received, stopping server...");
-            }
+        if let Err(e) = server.await {
+            eprintln!("Server error: {}", e);
         }
     });
 
-    // Wait for both tasks
-    tokio::try_join!(gui_handle, server_handle).unwrap();
+    // Launch Slint GUI (this will block until window is closed)
+    gui::launch_gui().await;
+    
+    // Abort server when GUI closes
+    server_handle.abort();
     
     Ok(())
 }
