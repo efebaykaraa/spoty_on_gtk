@@ -3,6 +3,7 @@ use crate::spotify::auth::{CallbackQuery, get_auth_url, exchange_code_for_token}
 use crate::templates::MessageTemplate;
 use tokio::sync::mpsc;
 use std::sync::{Arc, Mutex};
+use crate::gui::trigger_auth_success;
 
 pub async fn login() -> Result<HttpResponse> {
     let auth_url = get_auth_url();
@@ -32,6 +33,9 @@ pub async fn callback(query: web::Query<CallbackQuery>) -> Result<HttpResponse> 
     match exchange_code_for_token(code).await {
         Ok(token_response) => {
             println!("✓ Successfully authenticated with Spotify");
+
+            // Trigger GUI authentication success
+            trigger_auth_success();
             
             // After successful token exchange, notify GUI
             if let Some(sender) = AUTH_COMPLETE_SENDER.lock().unwrap().as_ref() {
